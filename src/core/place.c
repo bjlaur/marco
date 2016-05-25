@@ -41,6 +41,24 @@ typedef enum
   META_BOTTOM
 } MetaWindowDirection;
 
+static void
+center_tile_rect_in_area (MetaRectangle *rect,
+                          MetaRectangle *work_area)
+{
+  int fluff;
+
+  /* The point here is to tile a window such that "extra"
+   * space is equal on either side (i.e. so a full screen
+   * of windows tiled this way would center the windows
+   * as a group)
+   */
+
+  fluff = (work_area->width % (rect->width+1)) / 2;
+  rect->x = work_area->x + fluff;
+  fluff = (work_area->height % (rect->height+1)) / 3;
+  rect->y = work_area->y + fluff;
+}
+
 static gint
 northwestcmp (gconstpointer a, gconstpointer b)
 {
@@ -179,13 +197,23 @@ find_next_cascade (MetaWindow *window,
   current = meta_screen_get_current_xinerama (window->screen);
   meta_window_get_work_area_for_xinerama (window, current->number, &work_area);
 
+  /*
   cascade_x = MAX (0, work_area.x);
   cascade_y = MAX (0, work_area.y);
-
-  /* Find first cascade position that's not used. */
+  */
 
   window_width = window->frame ? window->frame->rect.width : window->rect.width;
   window_height = window->frame ? window->frame->rect.height : window->rect.height;
+
+  MetaRectangle rect;
+  rect.width = window_width;
+  rect.height = window_height;
+  center_tile_rect_in_area (&rect, &work_area);
+  cascade_x = rect.x;
+  cascade_y = rect.y;
+
+  /* Find first cascade position that's not used. */
+
 
   cascade_stage = 0;
   tmp = sorted;
@@ -455,6 +483,20 @@ rectangle_overlaps_some_window (MetaRectangle *rect,
 }
 
 static gint
+highmost_cmp (gconstpointer a, gconstpointer b)
+{
+  MetaWindow *aw = (gpointer) a;
+  MetaWindow *bw = (gpointer) b;
+
+  if(aw->stack_position > bw->stack_position)
+	  return -1;
+  else if (aw->stack_position < bw->stack_position)
+	  return 1;
+  else
+	  return 0;
+
+}
+static gint
 leftmost_cmp (gconstpointer a, gconstpointer b)
 {
   MetaWindow *aw = (gpointer) a;
@@ -510,23 +552,6 @@ topmost_cmp (gconstpointer a, gconstpointer b)
     return 0;
 }
 
-static void
-center_tile_rect_in_area (MetaRectangle *rect,
-                          MetaRectangle *work_area)
-{
-  int fluff;
-
-  /* The point here is to tile a window such that "extra"
-   * space is equal on either side (i.e. so a full screen
-   * of windows tiled this way would center the windows
-   * as a group)
-   */
-
-  fluff = (work_area->width % (rect->width+1)) / 2;
-  rect->x = work_area->x + fluff;
-  fluff = (work_area->height % (rect->height+1)) / 3;
-  rect->y = work_area->y + fluff;
-}
 
 static void
 center_rect_in_area (MetaRectangle *rect,
@@ -534,6 +559,38 @@ center_rect_in_area (MetaRectangle *rect,
 {
   rect->x = work_area->x + ((work_area->width - rect->width) / 2);
   rect->y = work_area->y + ((work_area->height - rect->height) / 2);
+}
+
+static GList *
+visible_windows (GList *windows)
+{
+  GList *stack_sorted;
+  stack_sorted = g_list_copy (windows);
+  stack_sorted = g_list_sort (stack_sorted, highmost_cmp);
+  GList *tmp;
+  GList *visible = NULL;
+  GList *before = NULL;
+
+  tmp = stack_sorted;
+  while (tmp != NULL)
+  {
+	  MetaWindow *w = tmp->data;
+	  MetaRectangle rect;
+	  meta_window_get_outer_rect(w, &rect);
+
+
+	  if(rectangle_overlaps_some_window(&rect,before) == FALSE)
+	  {
+		  visible = g_list_append(visible,w);
+	  }
+	  before = g_list_append(before,w);
+	  tmp = tmp->next;
+  }
+
+  g_list_free(stack_sorted);
+  g_list_free(before);
+  return visible;
+  
 }
 
 /* Find the leftmost, then topmost, empty area on the workspace
@@ -565,19 +622,21 @@ find_first_fit (MetaWindow *window,
   int retval;
   GList *below_sorted;
   GList *right_sorted;
+  GList *visible;
   GList *tmp;
   MetaRectangle rect;
   MetaRectangle work_area;
 
   retval = FALSE;
+  visible = visible_windows(windows);
 
   /* Below each window */
-  below_sorted = g_list_copy (windows);
+  below_sorted = g_list_copy (visible);
   below_sorted = g_list_sort (below_sorted, leftmost_cmp);
   below_sorted = g_list_sort (below_sorted, topmost_cmp);
 
   /* To the right of each window */
-  right_sorted = g_list_copy (windows);
+  right_sorted = g_list_copy (visible);
   right_sorted = g_list_sort (right_sorted, topmost_cmp);
   right_sorted = g_list_sort (right_sorted, leftmost_cmp);
 
@@ -939,7 +998,30 @@ meta_window_place (MetaWindow        *window,
    * fully overlapping window (e.g. starting multiple terminals)
    * */
   if (!meta_prefs_get_center_new_windows() && (x == xi->rect.x && y == xi->rect.y))
-    find_next_cascade (window, fgeom, windows, x, y, &x, &y);
+  {
+	   find_next_cascade (window, fgeom, windows, x, y, &x, &y);
+	
+	/*
+	If a fit wasn't found, then just pretend that the other windows
+	Don't exist.... Except we dont want it to overlap on top of the
+	current window.
+	*/
+
+	   /*
+    MetaWindow    *focus_window;
+    focus_window = window->display->focus_window;
+
+    GList *focus_window_list;
+    focus_window_list = g_list_prepend (NULL, focus_window);
+
+  	find_first_fit (window, fgeom, focus_window_list,
+                      xi->number,
+                      x, y, &x, &y);
+	
+    g_list_free (focus_window_list);
+	*/
+
+  }
 
  done_check_denied_focus:
   /* If the window is being denied focus and isn't a transient of the
